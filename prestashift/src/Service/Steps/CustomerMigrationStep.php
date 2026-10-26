@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -16,7 +17,9 @@ use PDO;
 use Exception;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\LanguageMapper;
+use PrestaShift\Service\LogService;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\SourceBatch;
 
 class CustomerMigrationStep
 {
@@ -57,7 +60,42 @@ class CustomerMigrationStep
         // 3. Group memberships of the customers created by the migration
         $this->migrateCustomerGroups($migrated);
 
+        $this->reportOldPasswords($customers);
+
         return ['count' => count($customers), 'finished' => false];
+    }
+
+    /**
+     * Warns about passwords the new shop will not be able to verify.
+     *
+     * PrestaShop accepts two password formats (src/Core/Crypto/Hashing.php):
+     * bcrypt, which `password_verify()` checks without any shop-specific data,
+     * and the old md5 format, checked as md5(_COOKIE_KEY_ . password) with the
+     * cookie key of the shop doing the check. A customer whose password is
+     * still in that old format therefore cannot log in to the new shop, because
+     * its cookie key is a different one — and the key lives in
+     * app/config/parameters.php, not in the database, so no migration can carry
+     * it over. Those customers have to use "forgot password".
+     *
+     * Accounts created on 1.5 or 1.6 keep the old format until their owner logs
+     * in once, so an old shop can have a lot of them. Saying nothing would mean
+     * the shopkeeper learns about it from angry customers.
+     */
+    private function reportOldPasswords(array $customers)
+    {
+        $old = 0;
+        foreach ($customers as $customer) {
+            $hash = isset($customer['passwd']) ? (string) $customer['passwd'] : '';
+            if ($hash !== '' && preg_match('/^[a-f0-9]{32}$/i', $hash)) {
+                ++$old;
+            }
+        }
+        if ($old > 0) {
+            LogService::getInstance()->warning("$old customer(s) in this batch still use the old md5 password format."
+                . ' Those passwords cannot be verified by this shop (they were salted with the cookie key of the old shop)'
+                . ' — these customers have to use "Forgot your password?" to set a new one. Their accounts, orders and'
+                . ' addresses are migrated normally.');
+        }
     }
 
     private function getCustomersFromSource($offset, $limit, $dateFilter = null)
@@ -134,6 +172,11 @@ class CustomerMigrationStep
     {
         $groups = $this->db_connection->query("SELECT * FROM `{$this->prefix}group`")->fetchAll(PDO::FETCH_ASSOC);
 
+        // All group names in one query instead of one query per group
+        $langRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}group_lang` WHERE id_group IN ({ids})",
+            'id_group', array_column($groups, 'id_group'));
+
         foreach ($groups as $group) {
             $sid = (int)$group['id_group'];
             $tid = IdMapper::own('group', $sid);
@@ -157,7 +200,7 @@ class CustomerMigrationStep
             } catch (Exception $e) {
             }
 
-            $langs = LanguageMapper::expand($this->db_connection->query("SELECT * FROM `{$this->prefix}group_lang` WHERE id_group = $sid")->fetchAll(PDO::FETCH_ASSOC));
+            $langs = LanguageMapper::expand(SourceBatch::of($langRows, $sid));
             foreach ($langs as $lang) {
                 Db::getInstance()->execute("DELETE FROM `" . _DB_PREFIX_ . "group_lang` WHERE id_group = $tid AND id_lang = " . (int)$lang['id_lang']);
                 SchemaHelper::insertIgnore('group_lang', [

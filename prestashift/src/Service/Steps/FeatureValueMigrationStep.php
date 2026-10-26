@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -16,11 +17,15 @@ use PDO;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\LanguageMapper;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\SourceBatch;
 
 class FeatureValueMigrationStep
 {
     private $db_connection;
     private $prefix;
+
+    /** @var array source id => translation rows, read once per batch */
+    private $langRows = [];
 
     public function __construct($db_connection, $prefix)
     {
@@ -39,6 +44,10 @@ class FeatureValueMigrationStep
         }
 
         IdMapper::prepare('feature_value', array_column($items, 'id_feature_value'));
+        // One query for the whole batch instead of one per record
+        $this->langRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}feature_value_lang` WHERE id_feature_value IN ({ids})",
+            'id_feature_value', array_column($items, 'id_feature_value'));
 
         foreach ($items as $item) {
             $this->importValue($item);
@@ -62,8 +71,7 @@ class FeatureValueMigrationStep
 
         SchemaHelper::upsert('feature_value', $row, ['id_feature_value']);
 
-        $stmt = $this->db_connection->query("SELECT * FROM `{$this->prefix}feature_value_lang` WHERE id_feature_value = $sid");
-        $langs = LanguageMapper::expand($stmt->fetchAll(PDO::FETCH_ASSOC));
+        $langs = LanguageMapper::expand(SourceBatch::of($this->langRows, $sid));
 
         foreach ($langs as $lang) {
             $idLang = (int)$lang['id_lang'];

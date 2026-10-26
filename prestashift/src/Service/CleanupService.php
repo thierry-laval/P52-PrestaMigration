@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service;
@@ -202,6 +203,16 @@ class CleanupService
         foreach ((array) $rows as $row) {
             $ids[] = (int) $row['id_carrier'];
         }
+
+        // Carriers an earlier migration created here. A shipping module carrier
+        // of the source arrives with is_module set, so the rule above spared it
+        // and the next run migrated it again: the carrier list grew by one copy
+        // with every repeated migration. What this module wrote, it removes.
+        foreach (IdMapper::targetIds('carrier') as $id) {
+            $ids[] = $id;
+        }
+
+        $ids = array_values(array_unique(array_filter($ids)));
         if (empty($ids)) {
             return;
         }

@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -16,6 +17,7 @@ use PDO;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\LanguageMapper;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\SourceBatch;
 
 /**
  * SEO meta of shop pages. The page name is unique: a page the target already
@@ -28,6 +30,9 @@ class MetaMigrationStep
 {
     private $db_connection;
     private $prefix;
+
+    /** @var array source id_meta => translation rows, read once per batch */
+    private $langRows = [];
 
     public function __construct($db_connection, $prefix)
     {
@@ -48,6 +53,11 @@ class MetaMigrationStep
         }
 
         $overwrite = (bool)IdMapper::option('clean_target');
+
+        // All meta titles in one query instead of one query per page
+        $this->langRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}meta_lang` WHERE id_meta IN ({ids}) ORDER BY id_shop ASC",
+            'id_meta', array_column($items, 'id_meta'));
 
         foreach ($items as $data) {
             $sid = (int)$data['id_meta'];
@@ -71,7 +81,7 @@ class MetaMigrationStep
     private function importMetaLang($sid, $tid)
     {
         $shopId = SchemaHelper::getTargetShopId();
-        $rows = LanguageMapper::expand($this->db_connection->query("SELECT * FROM `{$this->prefix}meta_lang` WHERE id_meta = $sid ORDER BY id_shop ASC")->fetchAll(PDO::FETCH_ASSOC));
+        $rows = LanguageMapper::expand(SourceBatch::of($this->langRows, $sid));
 
         $done = [];
         foreach ($rows as $lang) {

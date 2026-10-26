@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service;
@@ -387,6 +388,193 @@ class IdMapper
         self::$allocated = [];
         self::$dict = [];
         self::$warned = [];
+
+        self::adoptLegacyIds();
+    }
+
+    /**
+     * Takes over the records of a migration made before this map existed.
+     *
+     * Until 1.3.0 a migration copied the source ids as they were. The map knows
+     * nothing about those records, so a later run would compute an offset from
+     * the highest id in the target and give every source record a fresh number
+     * — writing a second copy of the whole catalogue instead of updating it.
+     * That is what happened to a shop that migrated a month earlier and then
+     * ran an update: 3009 categories became 5807.
+     *
+     * So before the first allocation for a source, check whether this target
+     * already holds that source's records under their own ids, and if it does,
+     * write the map as 1:1 and keep the offsets at zero. The check is evidence
+     * based: products (categories as a fallback) at the same id have to match
+     * on date_add, and on reference when the source has one. A target shop with
+     * its own, unrelated records at those ids fails the check, so nothing is
+     * adopted and nothing of the shop's own is overwritten.
+     */
+    private static function adoptLegacyIds()
+    {
+        if (!self::$conn) {
+            return;
+        }
+
+        // Only ever for a source this map has never seen.
+        $seen = (int) Db::getInstance()->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . self::MAP_TABLE . "`
+            WHERE `source` = '" . pSQL(self::$source) . "'", false);
+        $seen += (int) Db::getInstance()->getValue('SELECT COUNT(*) FROM `' . _DB_PREFIX_ . self::OFFSET_TABLE . "`
+            WHERE `source` = '" . pSQL(self::$source) . "'", false);
+        if ($seen > 0) {
+            return;
+        }
+        // A target that is about to be emptied needs no adoption.
+        if (!empty(self::$options['clean_target'])) {
+            return;
+        }
+
+        if (!self::looksLikeOwnMigration('product') && !self::looksLikeOwnMigration('category')) {
+            return;
+        }
+
+        $log = LogService::getInstance();
+        $adopted = [];
+        foreach (array_keys(self::$entities) as $entity) {
+            if (in_array($entity, self::$dictionaries, true)) {
+                continue;
+            }
+            // Only records a migration numbers are adopted. Everything with a
+            // natural key of its own — meta pages, countries, currencies,
+            // states, customer groups, employee profiles, taxes, tags — belongs
+            // to the target shop and is matched by that key, not by its number.
+            // Adopting those was wrong and it showed: meta id 15 of the source
+            // was mapped onto meta id 15 of the target, which is a different
+            // page there, and the migration died on a duplicate "cart" page.
+            // Categories are adopted even though they have a matcher, because
+            // that matcher only recognises the shop's root and home category.
+            if (self::hasMatcher($entity) && $entity !== 'category') {
+                continue;
+            }
+            $count = self::adoptEntity($entity);
+            if ($count > 0) {
+                $adopted[$entity] = $count;
+            }
+        }
+
+        if (empty($adopted)) {
+            return;
+        }
+
+        $parts = [];
+        foreach ($adopted as $entity => $count) {
+            $parts[] = "$entity=$count";
+        }
+        $log->info('Records of an earlier migration adopted under their existing ids ('
+            . implode(', ', $parts) . '). This run updates them instead of adding copies.');
+    }
+
+    /**
+     * Does the target hold this source's records under the same ids?
+     */
+    private static function looksLikeOwnMigration($entity)
+    {
+        list($table, $pk) = self::tableOf($entity);
+        $hasReference = $entity === 'product';
+
+        try {
+            $columns = $hasReference ? "`$pk`, `date_add`, `reference`" : "`$pk`, `date_add`";
+            $rows = self::$conn->query("SELECT $columns FROM `" . self::$prefix . $table . "`
+                ORDER BY `$pk` DESC LIMIT 50")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            return false;
+        }
+        if (count($rows) < 5) {
+            return false; // too little to judge
+        }
+
+        $checked = 0;
+        $matched = 0;
+        foreach ($rows as $row) {
+            $id = (int) $row[$pk];
+            $target = Db::getInstance()->getRow('SELECT * FROM `' . _DB_PREFIX_ . bqSQL($table) . "`
+                WHERE `" . bqSQL($pk) . "` = $id", false);
+            if (!$target) {
+                continue;
+            }
+            ++$checked;
+            $same = isset($target['date_add']) && (string) $target['date_add'] === (string) $row['date_add'];
+            if ($same && $hasReference && (string) $row['reference'] !== '') {
+                $same = (string) $target['reference'] === (string) $row['reference'];
+            }
+            if ($same) {
+                ++$matched;
+            }
+        }
+
+        // Nearly all of the sampled records have to be the source's own.
+        return $checked >= 5 && $matched >= (int) ceil($checked * 0.9);
+    }
+
+    /**
+     * Writes 1:1 map rows for every id of this entity that exists on both sides.
+     */
+    private static function adoptEntity($entity)
+    {
+        list($table, $pk) = self::tableOf($entity);
+
+        try {
+            // By name, not by position: the bridge returns associative rows.
+            $sourceRows = self::$conn->query('SELECT `' . $pk . '` FROM `' . self::$prefix . $table . '`')
+                ->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            return 0;
+        }
+        if (empty($sourceRows)) {
+            return 0;
+        }
+        $sourceIds = [];
+        foreach ($sourceRows as $row) {
+            $sourceIds[] = isset($row[$pk]) ? $row[$pk] : reset($row);
+        }
+
+        $targetIds = [];
+        try {
+            foreach ((array) Db::getInstance()->executeS('SELECT `' . bqSQL($pk) . '` AS id
+                FROM `' . _DB_PREFIX_ . bqSQL($table) . '`') as $row) {
+                $targetIds[(int) $row['id']] = true;
+            }
+        } catch (\Exception $e) {
+            return 0;
+        }
+
+        $skip = [];
+        foreach (self::systemTargetIds($entity) as $systemId) {
+            $skip[(int) $systemId] = true;
+        }
+
+        $values = [];
+        foreach ($sourceIds as $sourceId) {
+            $id = (int) $sourceId;
+            if ($id > 0 && isset($targetIds[$id]) && !isset($skip[$id])) {
+                $values[] = "('" . pSQL(self::$source) . "', '" . pSQL($entity) . "', $id, $id, 0)";
+            }
+        }
+        if (empty($values)) {
+            return 0;
+        }
+
+        $written = 0;
+        foreach (array_chunk($values, 500) as $chunk) {
+            if (!Db::getInstance()->execute('INSERT IGNORE INTO `' . _DB_PREFIX_ . self::MAP_TABLE . '`
+                (`source`, `entity`, `source_id`, `target_id`, `linked`) VALUES ' . implode(',', $chunk))) {
+                // Say so instead of reporting an intention as a result.
+                LogService::getInstance()->error("Adopting existing ids of $entity failed while writing the id map.");
+
+                return 0;
+            }
+            $written += (int) Db::getInstance()->Affected_Rows();
+        }
+        // Ids stay as they are, so this entity is numbered 1:1 from now on.
+        Db::getInstance()->execute('INSERT IGNORE INTO `' . _DB_PREFIX_ . self::OFFSET_TABLE . "`
+            (`source`, `entity`, `offset_value`) VALUES ('" . pSQL(self::$source) . "', '" . pSQL($entity) . "', 0)");
+
+        return $written;
     }
 
     /**
@@ -395,6 +583,30 @@ class IdMapper
      * pointed at are gone. The next allocation starts again from offset 0,
      * which yields 1:1 ids.
      */
+    /**
+     * Target ids this module wrote for an entity, excluding records it only
+     * linked to (those belong to the target shop and must never be deleted).
+     * Cleaning uses it to remove exactly what previous migrations created.
+     */
+    public static function targetIds($entity)
+    {
+        $ids = [];
+        try {
+            $rows = Db::getInstance()->executeS('SELECT `target_id` FROM `' . _DB_PREFIX_ . self::MAP_TABLE . "`
+                WHERE `entity` = '" . pSQL($entity) . "' AND `linked` = 0");
+        } catch (\Exception $e) {
+            return $ids;
+        }
+        foreach ((array) $rows as $row) {
+            $id = (int) $row['target_id'];
+            if ($id > 0) {
+                $ids[$id] = $id;
+            }
+        }
+
+        return array_values($ids);
+    }
+
     public static function forget(array $entities)
     {
         if (empty($entities)) {
@@ -909,7 +1121,9 @@ class IdMapper
                         return self::existing('group', (int) \Configuration::get($key) ?: $default);
                     }
                 }
-                $name = self::sourceValue("SELECT `name` FROM `" . self::$prefix . "group_lang` WHERE `id_group` = $sourceId ORDER BY (`id_lang` = " . (int) self::sourceConfig('PS_LANG_DEFAULT', 1) . ') DESC');
+                $groups = self::sourceTable('group_names', "SELECT `id_group`, `name` FROM `" . self::$prefix . "group_lang`
+                    ORDER BY (`id_lang` = " . (int) self::sourceConfig('PS_LANG_DEFAULT', 1) . ') DESC', 'id_group');
+                $name = isset($groups[$sourceId]) ? (string) $groups[$sourceId]['name'] : '';
 
                 return $name === '' ? 0 : (int) Db::getInstance()->getValue("SELECT `id_group` FROM `" . _DB_PREFIX_ . "group_lang` WHERE `name` = '" . pSQL($name) . "'", false);
 
@@ -944,7 +1158,9 @@ class IdMapper
                 if ($sourceId === (int) _PS_ADMIN_PROFILE_) {
                     return self::existing('profile', (int) _PS_ADMIN_PROFILE_);
                 }
-                $name = self::sourceValue("SELECT `name` FROM `" . self::$prefix . "profile_lang` WHERE `id_profile` = $sourceId ORDER BY (`id_lang` = " . (int) self::sourceConfig('PS_LANG_DEFAULT', 1) . ') DESC');
+                $profiles = self::sourceTable('profile_names', "SELECT `id_profile`, `name` FROM `" . self::$prefix . "profile_lang`
+                    ORDER BY (`id_lang` = " . (int) self::sourceConfig('PS_LANG_DEFAULT', 1) . ') DESC', 'id_profile');
+                $name = isset($profiles[$sourceId]) ? (string) $profiles[$sourceId]['name'] : '';
 
                 return $name === '' ? 0 : (int) Db::getInstance()->getValue("SELECT `id_profile` FROM `" . _DB_PREFIX_ . "profile_lang` WHERE `name` = '" . pSQL($name) . "'", false);
 
@@ -965,10 +1181,11 @@ class IdMapper
                     WHERE `iso_code` = '" . pSQL($iso) . "' ORDER BY `deleted` ASC", false);
 
             case 'state':
-                $row = self::sourceRow("SELECT `iso_code`, `id_country` FROM `" . self::$prefix . "state` WHERE `id_state` = $sourceId");
-                if (!$row) {
+                $states = self::sourceTable('states', "SELECT `id_state`, `iso_code`, `id_country` FROM `" . self::$prefix . 'state`', 'id_state');
+                if (!isset($states[$sourceId])) {
                     return 0;
                 }
+                $row = $states[$sourceId];
                 $country = self::ref('country', (int) $row['id_country']);
                 if ($country <= 0) {
                     return 0;
@@ -978,9 +1195,10 @@ class IdMapper
                     WHERE `iso_code` = '" . pSQL($row['iso_code']) . "' AND `id_country` = " . (int) $country, false);
 
             case 'tax':
-                $row = self::sourceRow("SELECT t.`rate`, tl.`name` FROM `" . self::$prefix . "tax` t
+                $taxes = self::sourceTable('taxes', "SELECT t.`id_tax`, t.`rate`, tl.`name` FROM `" . self::$prefix . "tax` t
                     LEFT JOIN `" . self::$prefix . "tax_lang` tl ON tl.`id_tax` = t.`id_tax`
-                    WHERE t.`id_tax` = $sourceId ORDER BY (tl.`id_lang` = " . (int) self::sourceConfig('PS_LANG_DEFAULT', 1) . ') DESC');
+                    ORDER BY (tl.`id_lang` = " . (int) self::sourceConfig('PS_LANG_DEFAULT', 1) . ') DESC', 'id_tax');
+                $row = isset($taxes[$sourceId]) ? $taxes[$sourceId] : null;
                 if (!$row || $row['name'] === null) {
                     return 0;
                 }
@@ -991,7 +1209,8 @@ class IdMapper
                     ORDER BY t.`deleted` ASC', false);
 
             case 'tax_rules_group':
-                $name = self::sourceValue("SELECT `name` FROM `" . self::$prefix . "tax_rules_group` WHERE `id_tax_rules_group` = $sourceId");
+                $trg = self::sourceTable('tax_rules_groups', "SELECT `id_tax_rules_group`, `name` FROM `" . self::$prefix . 'tax_rules_group`', 'id_tax_rules_group');
+                $name = isset($trg[$sourceId]) ? (string) $trg[$sourceId]['name'] : '';
                 if ($name === '') {
                     return 0;
                 }
@@ -1072,7 +1291,8 @@ class IdMapper
                     return (int) $map[$sourceId];
                 }
                 if (!isset(self::$dict['zone'][$sourceId])) {
-                    $name = self::sourceValue("SELECT `name` FROM `" . self::$prefix . "zone` WHERE `id_zone` = $sourceId");
+                    $zones = self::sourceTable('zones', "SELECT `id_zone`, `name` FROM `" . self::$prefix . 'zone`', 'id_zone');
+                    $name = isset($zones[$sourceId]) ? (string) $zones[$sourceId]['name'] : '';
                     self::$dict['zone'][$sourceId] = $name === '' ? 0 : (int) Db::getInstance()->getValue("SELECT `id_zone` FROM `" . _DB_PREFIX_ . "zone`
                         WHERE `name` = '" . pSQL($name) . "'", false);
                 }
@@ -1099,6 +1319,34 @@ class IdMapper
         }
 
         return 0;
+    }
+
+    /**
+     * A whole reference table of the source, read once and kept for the run.
+     *
+     * Matching by natural key used to read a single row per record, and over
+     * the connector every such read is an HTTP request to the source shop.
+     * The first row of each id wins, which is what the per-row queries with
+     * their ORDER BY ... LIMIT 1 did.
+     */
+    private static function sourceTable($key, $sql, $idColumn)
+    {
+        if (!isset(self::$dict[$key])) {
+            self::$dict[$key] = [];
+            try {
+                $rows = self::$conn->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($rows as $row) {
+                    $id = (int) $row[$idColumn];
+                    if (!isset(self::$dict[$key][$id])) {
+                        self::$dict[$key][$id] = $row;
+                    }
+                }
+            } catch (\Exception $e) {
+                // source table unreadable — no match
+            }
+        }
+
+        return self::$dict[$key];
     }
 
     private static function sourceIso($table, $sourceId)

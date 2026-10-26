@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -15,11 +16,19 @@ use Db;
 use PDO;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\StockWriter;
+use PrestaShift\Service\SourceBatch;
 
 class ProductAttributeMigrationStep
 {
     private $db_connection;
     private $prefix;
+
+    /** @var array source id_product_attribute => rows, each read once per batch */
+    private $shopRows = [];
+    private $attributeRows = [];
+    private $stockRows = [];
+    private $imageRows = [];
 
     public function __construct($db_connection, $prefix)
     {
@@ -37,10 +46,14 @@ class ProductAttributeMigrationStep
 
         IdMapper::prepare('product_attribute', array_column($rows, 'id_product_attribute'));
         IdMapper::prepare('product', array_column($rows, 'id_product'));
+        $this->loadChildren(array_column($rows, 'id_product_attribute'));
 
         foreach ($rows as $row) {
             $this->importItem($row);
         }
+
+        // The stock of the whole batch in one statement
+        StockWriter::flush();
 
         return ['count' => count($rows), 'finished' => false];
     }
@@ -49,6 +62,26 @@ class ProductAttributeMigrationStep
     {
         $stmt = $this->db_connection->query("SELECT * FROM `{$this->prefix}product_attribute` ORDER BY id_product_attribute ASC LIMIT $limit OFFSET $offset");
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Shop rows, attribute values, stock and images of the whole batch: four
+     * queries instead of four per combination.
+     */
+    private function loadChildren(array $ids)
+    {
+        $this->shopRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}product_attribute_shop` WHERE id_product_attribute IN ({ids}) ORDER BY id_shop ASC",
+            'id_product_attribute', $ids);
+        $this->attributeRows = SourceBatch::grouped($this->db_connection,
+            "SELECT id_product_attribute, id_attribute FROM `{$this->prefix}product_attribute_combination` WHERE id_product_attribute IN ({ids})",
+            'id_product_attribute', $ids);
+        $this->stockRows = SourceBatch::grouped($this->db_connection,
+            "SELECT id_product_attribute, quantity FROM `{$this->prefix}stock_available` WHERE id_product_attribute IN ({ids})",
+            'id_product_attribute', $ids);
+        $this->imageRows = SourceBatch::grouped($this->db_connection,
+            "SELECT id_product_attribute, id_image FROM `{$this->prefix}product_attribute_image` WHERE id_product_attribute IN ({ids})",
+            'id_product_attribute', $ids);
     }
 
     private function importItem($data)
@@ -73,7 +106,7 @@ class ProductAttributeMigrationStep
     private function importShop($sid, $tid)
     {
         $shopId = SchemaHelper::getTargetShopId();
-        $shops = $this->db_connection->query("SELECT * FROM `{$this->prefix}product_attribute_shop` WHERE id_product_attribute = $sid ORDER BY id_shop ASC")->fetchAll(PDO::FETCH_ASSOC);
+        $shops = SourceBatch::of($this->shopRows, $sid);
         if (empty($shops)) {
             return;
         }
@@ -89,7 +122,7 @@ class ProductAttributeMigrationStep
 
     private function importCombination($sid, $tid)
     {
-        $combs = $this->db_connection->query("SELECT id_attribute FROM `{$this->prefix}product_attribute_combination` WHERE id_product_attribute = $sid")->fetchAll(PDO::FETCH_ASSOC);
+        $combs = SourceBatch::of($this->attributeRows, $sid);
 
         Db::getInstance()->execute("DELETE FROM `" . _DB_PREFIX_ . "product_attribute_combination` WHERE id_product_attribute = $tid");
 
@@ -107,14 +140,15 @@ class ProductAttributeMigrationStep
 
     private function importStock($sid, $tidProduct, $tid)
     {
-        $qty = $this->db_connection->query("SELECT quantity FROM `{$this->prefix}stock_available` WHERE id_product_attribute = $sid")->fetchColumn();
+        $stock = SourceBatch::of($this->stockRows, $sid);
+        $qty = isset($stock[0]['quantity']) ? (int)$stock[0]['quantity'] : 0;
 
-        \StockAvailable::setQuantity($tidProduct, $tid, (int)$qty);
+        StockWriter::set($tidProduct, $tid, $qty);
     }
 
     private function importImages($sid, $tid)
     {
-        $rows = $this->db_connection->query("SELECT id_image FROM `{$this->prefix}product_attribute_image` WHERE id_product_attribute = $sid")->fetchAll(PDO::FETCH_ASSOC);
+        $rows = SourceBatch::of($this->imageRows, $sid);
 
         Db::getInstance()->execute("DELETE FROM `" . _DB_PREFIX_ . "product_attribute_image` WHERE id_product_attribute = $tid");
 

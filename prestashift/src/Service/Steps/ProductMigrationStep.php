@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -16,6 +17,8 @@ use PDO;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\LanguageMapper;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\StockWriter;
+use PrestaShift\Service\SourceBatch;
 
 class ProductMigrationStep
 {
@@ -27,6 +30,15 @@ class ProductMigrationStep
 
     /** @var array source id_product_1 => [source id_product_2, ...] for the batch */
     private $accessories = [];
+
+    /** @var array source id_product => translation rows, read once per batch */
+    private $langRows = [];
+
+    /** @var array source id_product => stock rows, read once per batch */
+    private $stockRows = [];
+
+    /** @var array source id_product => category link rows, read once per batch */
+    private $categoryRows = [];
 
     public function __construct($db_connection, $prefix)
     {
@@ -46,10 +58,14 @@ class ProductMigrationStep
         IdMapper::prepare('product', $ids);
         $this->loadCombinationFlags($ids);
         $this->loadAccessories($ids);
+        $this->loadChildren($ids);
 
         foreach ($products as $product) {
             $this->importProduct($product);
         }
+
+        // The stock of the whole batch in one statement
+        StockWriter::flush();
 
         return ['count' => count($products), 'finished' => false];
     }
@@ -87,6 +103,24 @@ class ProductMigrationStep
             }
         } catch (\Exception $e) {
         }
+    }
+
+    /**
+     * Translations, stock and category links of the whole batch: three queries
+     * instead of three per product.
+     */
+    private function loadChildren(array $ids)
+    {
+        $this->langRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}product_lang` WHERE id_product IN ({ids}) ORDER BY id_shop ASC",
+            'id_product', $ids);
+        $this->stockRows = SourceBatch::grouped($this->db_connection,
+            "SELECT id_product, quantity, out_of_stock FROM `{$this->prefix}stock_available`
+             WHERE id_product IN ({ids}) AND id_product_attribute = 0",
+            'id_product', $ids);
+        $this->categoryRows = SourceBatch::grouped($this->db_connection,
+            "SELECT id_product, id_category, position FROM `{$this->prefix}category_product` WHERE id_product IN ({ids})",
+            'id_product', $ids);
     }
 
     private function importProduct($data)
@@ -137,7 +171,12 @@ class ProductMigrationStep
             'show_condition' => $data['show_condition'],
             'condition' => $data['condition'],
             'show_price' => $data['show_price'],
-            'indexed' => 1,
+            // A migrated product is not in the search index yet. PrestaShop's
+            // own migration guide tells the shopkeeper to run "Add missing
+            // products to the index", and "missing" means indexed = 0, so
+            // claiming 1 here would make that button find nothing to do and
+            // leave the shop with a search that returns no results.
+            'indexed' => 0,
             'visibility' => $data['visibility'],
             'is_virtual' => $data['is_virtual'],
             'cache_is_pack' => isset($data['cache_is_pack']) ? $data['cache_is_pack'] : 0,
@@ -206,8 +245,7 @@ class ProductMigrationStep
     private function importProductLang($sid, $tid)
     {
         $shopId = SchemaHelper::getTargetShopId();
-        $stmt = $this->db_connection->query("SELECT * FROM `{$this->prefix}product_lang` WHERE id_product = $sid ORDER BY id_shop ASC");
-        $langs = LanguageMapper::expand($stmt->fetchAll(PDO::FETCH_ASSOC));
+        $langs = LanguageMapper::expand(SourceBatch::of($this->langRows, $sid));
 
         $done = [];
         foreach ($langs as $lang) {
@@ -271,7 +309,7 @@ class ProductMigrationStep
             'show_condition' => (int)$p['show_condition'],
             'condition' => $p['condition'],
             'show_price' => (int)$p['show_price'],
-            'indexed' => 1,
+            'indexed' => 0, // see importProduct(): the index is built afterwards
             'visibility' => $p['visibility'],
             'cache_default_attribute' => (int)$p['cache_default_attribute'],
             'advanced_stock_management' => (int)$p['advanced_stock_management'],
@@ -285,22 +323,19 @@ class ProductMigrationStep
 
     private function importStock($sid, $tid)
     {
-        $sql = "SELECT quantity, out_of_stock FROM `{$this->prefix}stock_available` WHERE id_product = $sid AND id_product_attribute = 0";
-        $row = $this->db_connection->query($sql)->fetchAll(PDO::FETCH_ASSOC);
+        $row = SourceBatch::of($this->stockRows, $sid);
 
         $qty = isset($row[0]['quantity']) ? (int)$row[0]['quantity'] : 0;
 
-        \StockAvailable::setQuantity($tid, 0, $qty);
-
-        // Force out_of_stock=2 (use global setting) — safer than copying
-        // per-product overrides from source which may be stale or incorrect
-        \StockAvailable::setProductOutOfStock($tid, 2);
+        // Written with the rest of the batch. out_of_stock stays 2 (use the
+        // shop's global setting) — safer than copying per-product overrides
+        // from the source, which may be stale or wrong.
+        StockWriter::set($tid, 0, $qty);
     }
 
     private function importCategoryLink($sid, $tid, $defaultCategory)
     {
-        $stmt = $this->db_connection->query("SELECT id_category, position FROM `{$this->prefix}category_product` WHERE id_product = $sid");
-        $cats = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $cats = SourceBatch::of($this->categoryRows, $sid);
 
         Db::getInstance()->execute("DELETE FROM `" . _DB_PREFIX_ . "category_product` WHERE id_product = $tid");
 

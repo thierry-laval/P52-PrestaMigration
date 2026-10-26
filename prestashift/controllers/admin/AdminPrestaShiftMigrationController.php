@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  * 
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.0.0
  */
 
@@ -58,6 +59,15 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
                 'test_connection_btn' => $this->module->l('Test Connection & Continue', 'AdminPrestaShiftMigrationController'),
                 'testing' => $this->module->l('Testing...', 'AdminPrestaShiftMigrationController'),
                 'rate_limit_wait' => $this->module->l('Rate limit reached — waiting before retrying the batch...', 'AdminPrestaShiftMigrationController'),
+                // Why a step could not be loaded — a bare "failed" tells nobody anything
+                'step_failed' => $this->module->l('This step could not be loaded.', 'AdminPrestaShiftMigrationController'),
+                'err_no_answer' => $this->module->l('The shop gave no answer — the request was blocked, timed out, or the connection dropped.', 'AdminPrestaShiftMigrationController'),
+                'err_session' => $this->module->l('Your back-office session has expired. Reload the page and log in again.', 'AdminPrestaShiftMigrationController'),
+                'err_not_found' => $this->module->l('The module page was not found. Reinstall the module or clear the shop cache.', 'AdminPrestaShiftMigrationController'),
+                'err_server' => $this->module->l('The shop returned a server error. The details are below and in your hosting error log.', 'AdminPrestaShiftMigrationController'),
+                'err_not_json' => $this->module->l('The shop returned something else than the module expected — usually a PHP warning, a security plugin or a login page.', 'AdminPrestaShiftMigrationController'),
+                'zones_error' => $this->module->l('Zones could not be loaded from the source shop.', 'AdminPrestaShiftMigrationController'),
+                'statuses_error' => $this->module->l('Order statuses could not be loaded from the source shop.', 'AdminPrestaShiftMigrationController'),
                 'connection_error' => $this->module->l('Connection Error', 'AdminPrestaShiftMigrationController'),
                 'connection_check_failed' => $this->module->l('Connection Check Failed:', 'AdminPrestaShiftMigrationController'),
                 'preflight_running' => $this->module->l('Running pre-flight checks...', 'AdminPrestaShiftMigrationController'),
@@ -133,7 +143,9 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
             }
             
             $moduleDir = _PS_MODULE_DIR_;
-            $basePath = $moduleDir . 'prestashift/views/templates/admin/_steps/';
+            // The real folder, not a hardcoded name — the module still works
+            // when its directory was renamed on upload.
+            $basePath = $moduleDir . $this->module->name . '/views/templates/admin/_steps/';
             
             $debug_info = [
                 'step' => $step,
@@ -215,10 +227,10 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
                     'db_user' => Tools::getValue('db_user'),
                     'db_pass' => Tools::getValue('db_pass', ''),
                     'db_prefix' => Tools::getValue('db_prefix', 'ps_'),
-                    'source_url' => rtrim(Tools::getValue('source_url', ''), '/'),
+                    'source_url' => \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url', '')),
                 ];
             } else {
-                $sourceUrl = rtrim(Tools::getValue('source_url'), '/');
+                $sourceUrl = \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url'));
                 $config = [
                     'connection_method' => 'bridge',
                     'use_bridge' => 1,
@@ -238,9 +250,45 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
             }
             $prefix = $test['prefix'] ?? $config['db_prefix'];
             $sourceVersion = $test['ps_version'] ?? 'unknown';
+
+            // How many shops the source holds. A multistore source migrates as
+            // one shop: every per-shop table is read ordered by id_shop and the
+            // first row wins, so the lowest-numbered shop is the one that moves.
+            // That is a reasonable default and a terrible surprise, so it is
+            // said out loud here instead of being discovered from the prices.
+            $sourceShops = [];
+            try {
+                $rows = $conn->query('SELECT `id_shop`, `name` FROM `' . $prefix . 'shop` ORDER BY `id_shop` ASC')
+                    ->fetchAll(\PDO::FETCH_ASSOC);
+                foreach ((array) $rows as $row) {
+                    $sourceShops[(int) $row['id_shop']] = (string) $row['name'];
+                }
+            } catch (\Throwable $e) {
+                // single-shop installations before 1.5 have no shop table
+            }
+
+            // Remembered for the error reports: knowing the source shop's
+            // PrestaShop, PHP and connector versions saves a round of questions.
+            \Configuration::updateValue('PRESTASHIFT_SOURCE_INFO', json_encode([
+                'ps_version' => $sourceVersion,
+                'php_version' => $test['php_version'] ?? 'unknown',
+                'version' => $test['version'] ?? 'unknown',
+                'prefix' => $prefix,
+                'shops' => count($sourceShops),
+            ]));
             $targetVersion = _PS_VERSION_;
 
             $warnings = $this->getVersionWarnings($sourceVersion, $targetVersion);
+
+            if (count($sourceShops) > 1) {
+                $firstId = (int) array_key_first($sourceShops);
+                $warnings[] = sprintf(
+                    $this->module->l('The source is a multistore installation with %1$d shops. Only the data of shop "%2$s" (id %3$d) will be migrated — the other shops are ignored.', 'AdminPrestaShiftMigrationController'),
+                    count($sourceShops),
+                    $sourceShops[$firstId],
+                    $firstId
+                );
+            }
 
             $methodLabel = ($method === 'direct') ? 'Direct DB' : 'Bridge';
             $response = [
@@ -377,7 +425,7 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
             $config = [
                 'connection_method' => $method,
                 'db_prefix' => Tools::getValue('db_prefix', 'ps_'),
-                'source_url' => rtrim(Tools::getValue('source_url', ''), '/'),
+                'source_url' => \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url', '')),
             ];
             if ($method === 'direct') {
                 $config['db_host'] = Tools::getValue('db_host', 'localhost');
@@ -459,7 +507,7 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
         $config = [
             'connection_method' => $method,
             'db_prefix' => Tools::getValue('db_prefix', 'ps_'),
-            'source_url' => rtrim(Tools::getValue('source_url', ''), '/'),
+            'source_url' => \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url', '')),
             'scope' => Tools::getValue('scope', []),
             'options' => Tools::getValue('options', [])
         ];
@@ -647,13 +695,14 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
             $tasks[] = ['label' => $this->module->l('Orphaned combinations cleanup failed', 'AdminPrestaShiftMigrationController'), 'ok' => false, 'error' => $e->getMessage()];
         }
 
-        // 7. Refresh product indexing flags
-        try {
-            \Db::getInstance()->execute("UPDATE `" . _DB_PREFIX_ . "product` SET `indexed` = 1");
-            $tasks[] = ['label' => $this->module->l('Product index flags updated', 'AdminPrestaShiftMigrationController'), 'ok' => true];
-        } catch (\Throwable $e) {
-            $tasks[] = ['label' => $this->module->l('Product index update failed', 'AdminPrestaShiftMigrationController'), 'ok' => false, 'error' => $e->getMessage()];
-        }
+        // 7. The search index flags are left as the indexer found them.
+        //
+        // This step used to mark every product as indexed, which told the shop
+        // a lie: with a catalog over the inline threshold nothing had been
+        // indexed at all, and "Add missing products to the index" — the very
+        // button PrestaShop's migration guide points at — then had no work to
+        // do, so the front-office search stayed empty. Search::indexation()
+        // sets the flag itself for the products it indexes.
         } // end catalog-only maintenance
 
         // 6. Collect final report stats from target DB
@@ -677,6 +726,27 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
         }
 
         // 7. Generate redirect map
+        // Friendly URLs: the setting alone is not enough.
+        //
+        // PrestaShop writes the rewrite rules into .htaccess when the setting
+        // changes — Meta::update() and Meta::delete() end with
+        // Tools::generateHtaccess(), and that method reads PS_REWRITING_SETTINGS
+        // to decide what to write. This module writes the setting with
+        // Configuration::updateValue() and the meta rows with SQL, so nothing
+        // regenerated the file: a shop whose old site had friendly URLs on, and
+        // whose new one had them off, ended up with the setting on and no rules
+        // in .htaccess, which means 404 on every product and category page.
+        if (!empty($scope['configuration'])) {
+            try {
+                if (\Configuration::get('PS_REWRITING_SETTINGS')) {
+                    \Tools::generateHtaccess();
+                    $tasks[] = ['label' => $this->module->l('Rewrite rules regenerated for friendly URLs', 'AdminPrestaShiftMigrationController'), 'ok' => true];
+                }
+            } catch (\Throwable $e) {
+                $tasks[] = ['label' => $this->module->l('Rewrite rules regeneration failed — turn friendly URLs off and on again in Shop Parameters > Traffic & SEO', 'AdminPrestaShiftMigrationController'), 'ok' => false, 'error' => $e->getMessage()];
+            }
+        }
+
         $redirectFile = null;
         try {
             $savedState = (new \PrestaShift\Service\MigrationManager())->getSavedState();
@@ -740,6 +810,17 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
             $response = $manager->processBatch($state);
             
         } catch (Throwable $e) {
+            // The batch runs inside one transaction (see
+            // MigrationManager::processBatch). Undo it, so a batch that failed
+            // halfway leaves nothing behind and Resume can run it again from a
+            // whole state. MySQL would discard it when the connection closes
+            // anyway; doing it here means the rest of this request, telemetry
+            // included, no longer sits inside a dead transaction.
+            try {
+                \Db::getInstance()->execute('ROLLBACK');
+            } catch (Throwable $ignored) {
+            }
+
             // TELEMETRY: If user agreed, send the error report
             $config = $this->getMigrationConfig($state);
             $telemetry = new \PrestaShift\Service\TelemetryService();
@@ -747,6 +828,8 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
+                'task' => is_array($state) && isset($state['current_task']) ? $state['current_task'] : null,
+                'offset' => is_array($state) && isset($state['offset']) ? $state['offset'] : null,
                 'trace' => $e->getTraceAsString()
             ], $config);
 
@@ -775,7 +858,7 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
         }
         
         return [
-            'source_url' => Tools::getValue('source_url'),
+            'source_url' => \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url')),
             'options' => Tools::getValue('options', [])
         ];
     }
@@ -818,7 +901,7 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
         try {
             $config = [
                 'bridge_token' => Tools::getValue('bridge_token'),
-                'source_url' => Tools::getValue('source_url'),
+                'source_url' => \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url')),
                 'db_prefix' => Tools::getValue('db_prefix', 'ps_')
             ];
 
@@ -875,7 +958,7 @@ class AdminPrestaShiftMigrationController extends ModuleAdminController
             $config = [
                 'connection_method' => $method,
                 'db_prefix' => Tools::getValue('db_prefix', 'ps_'),
-                'source_url' => rtrim(Tools::getValue('source_url', ''), '/'),
+                'source_url' => \PrestaShift\Service\ConnectorClient::shopUrl(Tools::getValue('source_url', '')),
             ];
             if ($method === 'direct') {
                 $config['db_host'] = Tools::getValue('db_host', 'localhost');

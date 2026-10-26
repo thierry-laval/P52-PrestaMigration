@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -15,11 +16,15 @@ use Db;
 use PDO;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\SourceBatch;
 
 class WishlistMigrationStep
 {
     private $db_connection;
     private $prefix;
+
+    /** @var array source id_wishlist => product rows, read once per batch */
+    private $productRows = [];
 
     public function __construct($db_connection, $prefix)
     {
@@ -44,6 +49,10 @@ class WishlistMigrationStep
         }
 
         IdMapper::prepare('wishlist', array_column($items, 'id_wishlist'));
+        // All wishlist products of the batch in one query instead of one per list
+        $this->productRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}wishlist_product` WHERE id_wishlist IN ({ids})",
+            'id_wishlist', array_column($items, 'id_wishlist'));
 
         foreach ($items as $item) {
             $this->importWishlist($item);
@@ -73,11 +82,7 @@ class WishlistMigrationStep
             return;
         }
 
-        try {
-            $rows = $this->db_connection->query("SELECT * FROM `{$this->prefix}wishlist_product` WHERE id_wishlist = " . (int)$data['id_wishlist'])->fetchAll(PDO::FETCH_ASSOC);
-        } catch (\Exception $e) {
-            return;
-        }
+        $rows = SourceBatch::of($this->productRows, $data['id_wishlist']);
 
         Db::getInstance()->execute("DELETE FROM `" . _DB_PREFIX_ . "wishlist_product` WHERE id_wishlist = $tid");
 

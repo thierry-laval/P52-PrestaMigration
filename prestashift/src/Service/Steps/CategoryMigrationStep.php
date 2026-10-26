@@ -2,11 +2,12 @@
 /**
  * PrestaShift Migration Module
  *
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
  * @version   1.3.0
  */
 namespace PrestaShift\Service\Steps;
@@ -16,11 +17,18 @@ use PDO;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\LanguageMapper;
 use PrestaShift\Service\SchemaHelper;
+use PrestaShift\Service\SourceBatch;
 
 class CategoryMigrationStep
 {
     private $db_connection;
     private $prefix;
+
+    /** @var array source id_category => translation rows, read once per batch */
+    private $langRows = [];
+
+    /** @var array source id_category => group rows, read once per batch */
+    private $groupRows = [];
 
     public function __construct($db_connection, $prefix)
     {
@@ -37,6 +45,13 @@ class CategoryMigrationStep
         }
 
         IdMapper::prepare('category', array_column($categories, 'id_category'));
+        // Two queries for the whole batch instead of two per category
+        $this->langRows = SourceBatch::grouped($this->db_connection,
+            "SELECT * FROM `{$this->prefix}category_lang` WHERE id_category IN ({ids})",
+            'id_category', array_column($categories, 'id_category'));
+        $this->groupRows = SourceBatch::grouped($this->db_connection,
+            "SELECT id_category, id_group FROM `{$this->prefix}category_group` WHERE id_category IN ({ids})",
+            'id_category', array_column($categories, 'id_category'));
 
         foreach ($categories as $category) {
             $this->importCategory($category);
@@ -96,8 +111,7 @@ class CategoryMigrationStep
     private function importCategoryLang($sid, $tid)
     {
         $shopId = SchemaHelper::getTargetShopId();
-        $stmt = $this->db_connection->query("SELECT * FROM `{$this->prefix}category_lang` WHERE id_category = $sid");
-        $langs = LanguageMapper::expand($stmt->fetchAll(PDO::FETCH_ASSOC));
+        $langs = LanguageMapper::expand(SourceBatch::of($this->langRows, $sid));
 
         $done = [];
         foreach ($langs as $lang) {
@@ -137,15 +151,11 @@ class CategoryMigrationStep
     private function importCategoryGroup($sid, $tid)
     {
         $groups = [];
-        try {
-            $rows = $this->db_connection->query("SELECT id_group FROM `{$this->prefix}category_group` WHERE id_category = $sid")->fetchAll(PDO::FETCH_ASSOC);
-            foreach ($rows as $r) {
-                $gid = IdMapper::ref('group', (int)$r['id_group']);
-                if ($gid > 0) {
-                    $groups[$gid] = $gid;
-                }
+        foreach (SourceBatch::of($this->groupRows, $sid) as $r) {
+            $gid = IdMapper::ref('group', (int)$r['id_group']);
+            if ($gid > 0) {
+                $groups[$gid] = $gid;
             }
-        } catch (\Exception $e) {
         }
 
         $existing = [];

@@ -2,12 +2,12 @@
 /**
  * PrestaShift Connector
  * 
- * @author    marcingajewski.pl <kontakt@marcin.gajewski.pl>
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
  * Modifié par : Thierry Laval <contact@thierrylaval.dev>
  * @copyright 2026 Thierry Laval
  * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
- * @version   1.2.0
+ * @version   1.3.0
  */
 
 if (!defined('_PS_VERSION_')) {
@@ -20,7 +20,7 @@ class PsConnector extends Module
     {
         $this->name = 'psconnector';
         $this->tab = 'administration';
-        $this->version = '1.2.0';
+        $this->version = '1.3.0';
         $this->author = 'marcingajewski.pl';
         $this->need_instance = 0;
         $this->bootstrap = true;

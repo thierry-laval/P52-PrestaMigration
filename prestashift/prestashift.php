@@ -2,13 +2,22 @@
 /**
  * PrestaShift Migration Module
  * 
- * Original author: marcingajewski.pl <kontakt@marcin.gajewski.pl>
- * Modifié par :    Thierry Laval <contact@thierrylaval.dev>
- *
+ * @author    marcingajewski.pl <kontakt@marcingajewski.pl>
  * @copyright 2026 marcingajewski.pl
- * @copyright 2026 Thierry Laval
- * @license   Academic Free License 3.0 (AFL-3.0)
- * @version   1.3.0
+ * @license   https://opensource.org/licenses/AFL-3.0 Academic Free License 3.0 (AFL-3.0)
+ * @attribution PrestaShift by Marcin Gajewski (marcingajewski.pl). Keep the Attribution Notice in prestashift.php — AFL-3.0 section 6.
+ * @version   1.7.0
+ *
+ * ATTRIBUTION NOTICE (Academic Free License 3.0, section 6)
+ *
+ * PrestaShift was created by Marcin Gajewski — https://marcingajewski.pl
+ * Original project: https://github.com/GajewskiMarcin/prestashift
+ * Support the work: https://buymeacoffee.com/marcingajewski
+ *
+ * Derivative works and forks must keep this notice, the author credit, and the
+ * support link shown on the module's final screen. "PrestaShift" is the name of
+ * the original module: if you publish a modified version, please give it your
+ * own name.
  */
 
 if (!defined('_PS_VERSION_')) {
@@ -40,7 +49,7 @@ class PrestaShift extends Module
     {
         $this->name = 'prestashift';
         $this->tab = 'administration';
-        $this->version = '1.3.0';
+        $this->version = '1.7.0';
         $this->author = 'marcingajewski.pl';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -79,14 +88,26 @@ class PrestaShift extends Module
         $tab = new Tab();
         $tab->active = 1;
         $tab->class_name = 'AdminPrestaShiftMigration';
-        $tab->name = [];
-        foreach (Language::getLanguages(true) as $lang) {
-            $tab->name[$lang['id_lang']] = $this->l('PrestaShift Migration');
-        }
+        $tab->name = $this->getTabNames();
         $tab->id_parent = (int) Tab::getIdFromClassName('AdminAdvancedParameters');
         $tab->module = $this->name;
 
         return $tab->add();
+    }
+
+    /**
+     * Menu caption in every installed language. A hardcoded name showed the
+     * Polish caption to every shop, whatever its language.
+     */
+    public function getTabNames()
+    {
+        $names = [];
+        foreach (Language::getLanguages(true) as $lang) {
+            $locale = isset($lang['locale']) ? $lang['locale'] : null;
+            $names[(int) $lang['id_lang']] = $this->l('PrestaShift Migration', false, $locale);
+        }
+
+        return $names;
     }
 
     public function uninstallTab()
@@ -101,6 +122,6 @@ class PrestaShift extends Module
 
     public function getContent()
     {
-        return Tools::redirectAdmin($this->context->link->getAdminLink('AdminPrestaShiftMigration'));
+        Tools::redirectAdmin($this->context->link->getAdminLink('AdminPrestaShiftMigration'));
     }
 }
