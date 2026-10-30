@@ -61,6 +61,9 @@ class ConnectorClient
     public function __construct($url, $token)
     {
         $this->url = rtrim($url, '/');
+        if (strtolower((string) parse_url($this->url, PHP_URL_SCHEME)) !== 'https') {
+            throw new Exception('Connector Error: HTTPS is required to protect the connector token and migration data.');
+        }
         $this->token = $token;
     }
 
@@ -156,8 +159,8 @@ class ConnectorClient
                 'X-PS-Connector-Token: ' . $this->token
             ]);
             curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
 
             $started = microtime(true);
             $started = microtime(true);
@@ -292,7 +295,8 @@ class ConnectorClient
             'X-PS-Connector-Token: ' . $this->token
         ]);
         curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
 
         $response = curl_exec($ch);
         $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -326,4 +330,3 @@ class ConnectorClient
         return $text === '' ? '(empty)' : mb_substr($text, 0, 200);
     }
 }
-
