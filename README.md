@@ -1,6 +1,45 @@
-# PrestaShift — PrestaShop Migration Module
+<p align="center">
+  <img src="../assets/icon-256.png" alt="PrestaShift" title="PrestaShift" width="128" height="128">
+</p>
 
-Professional data migration tool for PrestaShop. Migrate your shop data between PrestaShop 1.7, 8, and 9 with ease.
+<h1 align="center">PrestaShift</h1>
+
+<p align="center">
+  <strong>PrestaShop Migration Module</strong>
+  <br>
+  <strong>Simple · Elegant · Efficient</strong>
+  <br>
+  <a href="https://github.com/GajewskiMarcin/prestashift/releases">Download</a> ·
+  <a href="#">Product page</a>
+</p>
+
+<p align="center">
+  <a href="../README.md">English</a> ·
+  <a href="README.fr.md">Français</a> ·
+  <a href="README.de.md">Deutsch</a> ·
+  <a href="README.es.md">Español</a> ·
+  <a href="README.pt.md">Português</a> ·
+  <a href="README.it.md">Italiano</a> ·
+</p>
+
+> **One module.** A professional data migration tool for PrestaShop. Easily migrate your store data between PrestaShop 1.7, 8 and 9.
+
+<p align="center">
+  <img src="https://img.shields.io/badge/PrestaShop-1.7%2B-DF0067?logo=prestashop&logoColor=white" alt="PrestaShop 1.7+">
+  <img src="https://img.shields.io/badge/PHP-7.4%2B-777BB4?logo=php&logoColor=white" alt="PHP 7.4+">
+  <img src="https://img.shields.io/badge/MySQL-5.7%2B-4479A1?logo=mysql&logoColor=white" alt="MySQL 5.7+">
+  <img src="https://img.shields.io/badge/MariaDB-10.3%2B-003545?logo=mariadb&logoColor=white" alt="MariaDB 10.3+">
+  <img src="https://img.shields.io/badge/license-AFL--3.0-orange.svg" alt="Academic Free License 3.0 (AFL-3.0)">
+</p>
+
+**The PrestaShift project is a data migration module for PrestaShop.**
+
+**In short:** it allows you to migrate data from an older PrestaShop store (1.7+) to a newer store (8 or 9), in batches, with resumable transfers, logging and a preview before migration.
+
+Two-part architecture:
+
+- **Source (old store)** → PSConnector module (read-only, token-secured API)
+- **Target (new store)** → PrestaShift module (migration engine)
 
 ## Features
 
