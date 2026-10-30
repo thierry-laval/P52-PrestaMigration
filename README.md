@@ -14,12 +14,12 @@
 </p>
 
 <p align="center">
-  <a href="../README.md">English</a> ·
-  <a href="README.fr.md">Français</a> ·
-  <a href="README.de.md">Deutsch</a> ·
-  <a href="README.es.md">Español</a> ·
-  <a href="README.pt.md">Português</a> ·
-  <a href="README.it.md">Italiano</a> ·
+  <a href="README.md">English</a> ·
+  <a href="translations/README.fr.md">Français</a> ·
+  <a href="translations/README.de.md">Deutsch</a> ·
+  <a href="translations/README.es.md">Español</a> ·
+  <a href="translations/README.pt.md">Português</a> ·
+  <a href="translations/README.it.md">Italiano</a> ·
 </p>
 
 > **One module.** A professional data migration tool for PrestaShop. Easily migrate your store data between PrestaShop 1.7, 8 and 9.
@@ -156,15 +156,28 @@ Created by [marcingajewski.pl](https://marcingajewski.pl)
 
 ### Attribution Notice
 
-The following is an **Attribution Notice** under section 6 of the AFL-3.0. Section 6 requires
-every derivative work to retain it:
+The following is an **Attribution Notice** under Section 6 of the AFL-3.0. Section 6 requires that all derivative works retain it:
 
-> PrestaShift was created by Marcin Gajewski — https://marcingajewski.pl
-> Original project: https://github.com/GajewskiMarcin/prestashift
-> Support the work: https://buymeacoffee.com/marcingajewski
+> PrestaShift was created by Marcin Gajewski — [https://marcingajewski.pl](https://marcingajewski.pl)
+> Original project: [https://github.com/GajewskiMarcin/prestashift](https://github.com/GajewskiMarcin/prestashift)
+> Support the work: [https://buymeacoffee.com/marcingajewski](https://buymeacoffee.com/marcingajewski)
 >
-> Derivative works and forks must keep this notice, the author credit, and the support link shown
-> on the module's final screen. "PrestaShift" is the name of the original module: if you publish a
+> Derivative works and forks must retain this notice, the author credit, and the support link displayed
+> on the module's final screen. “PrestaShift” is the name of the original module: if you publish a
 > modified version, please give it your own name.
 
-Forks are welcome — fixes sent back as pull requests reach every user of the module.
+Forks are welcome — fixes submitted as pull requests benefit all module users.
+
+Contributions go through pull requests to `main`.
+
+### Acknowledgments
+
+PrestaShift is improved by these people:
+
+| Who | Contribution |
+|---|---|
+| @xxxxxx | xxxxxxx |
+| @xxxxxx | xxxxxxx |
+| @xxxxxx | xxxxxxx |
+
+The same list is available in the module: **Settings → About → Thanks**
