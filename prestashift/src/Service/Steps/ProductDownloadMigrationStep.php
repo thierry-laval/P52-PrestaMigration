@@ -14,6 +14,7 @@ namespace PrestaShift\Service\Steps;
 
 use PDO;
 use PrestaShift\Service\DownloadPathResolver;
+use PrestaShift\Service\DirectDbClient;
 use PrestaShift\Service\IdMapper;
 use PrestaShift\Service\LogService;
 use PrestaShift\Service\SchemaHelper;
@@ -61,25 +62,54 @@ class ProductDownloadMigrationStep
 
         // Files are stored under a hash name, not an id
         if (!$this->skip_files && !empty($data['filename'])) {
+            $filename = (string)$data['filename'];
+            if ($filename === '.' || $filename === '..' || strpbrk($filename, '/\\') !== false || strpos($filename, "\0") !== false) {
+                LogService::getInstance()->warning('A virtual product file was skipped because its source filename is invalid.');
+                return;
+            }
+
             try {
                 if (!defined('_PS_DOWNLOAD_DIR_')) {
                     define('_PS_DOWNLOAD_DIR_', _PS_ROOT_DIR_ . '/download/');
                 }
-                $targetPath = DownloadPathResolver::resolve(_PS_DOWNLOAD_DIR_, $data['filename']);
+                $targetPath = DownloadPathResolver::resolve(_PS_DOWNLOAD_DIR_, $filename);
                 if ($targetPath === false) {
                     LogService::getInstance()->warning('Skipped a virtual product file because its destination path is unsafe.');
                     return;
                 }
 
-                $sourceFile = $this->db_connection->getFile('download/' . $data['filename']);
-                if ($sourceFile) {
-                    if (@file_put_contents($targetPath, $sourceFile) === false) {
-                        LogService::getInstance()->warning('Could not write a virtual product file to the download directory.');
-                    }
+                $sourceFile = $this->db_connection instanceof DirectDbClient
+                    ? $this->db_connection->getFile('download/' . $filename, isset($data['display_filename']) ? $data['display_filename'] : '')
+                    : $this->db_connection->getFile('download/' . $filename);
+                $displayFilename = isset($data['display_filename']) ? $data['display_filename'] : '';
+                if ($sourceFile === false || $sourceFile === '' || $this->isUnexpectedHtml($sourceFile, $displayFilename)) {
+                    LogService::getInstance()->warning(
+                        "Virtual product file " . basename($filename) . " could not be fetched as a valid file from the source shop."
+                    );
+                    return;
+                }
+
+                if (@file_put_contents($targetPath, $sourceFile) === false) {
+                    LogService::getInstance()->warning(
+                        "Virtual product file " . basename($filename) . " could not be written to the target download directory."
+                    );
                 }
             } catch (\Exception $e) {
-                LogService::getInstance()->warning('Could not fetch a virtual product file from the source shop.');
+                LogService::getInstance()->warning(
+                    "Virtual product file " . basename($filename) . " could not be fetched: " . $e->getMessage()
+                );
             }
         }
+    }
+
+    private function isUnexpectedHtml($content, $displayFilename)
+    {
+        $extension = strtolower(pathinfo((string)$displayFilename, PATHINFO_EXTENSION));
+        if (in_array($extension, ['html', 'htm', 'xhtml'], true)) {
+            return false;
+        }
+
+        $prefix = ltrim(substr($content, 0, 512), "\xEF\xBB\xBF \t\n\r\0\x0B");
+        return (bool)preg_match('/^(?:<!doctype\s+html\b|<html\b|<head\b|<body\b)/i', $prefix);
     }
 }
